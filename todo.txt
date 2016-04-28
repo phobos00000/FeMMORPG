@@ -1,0 +1,8 @@
+- sql server backend for logging
+- game server accepts login from login server
+- packet encryption?
+- caching persistence layer (redis?)
+- chat service
+- server GUI
+- resources (maps)
+- multi character support
