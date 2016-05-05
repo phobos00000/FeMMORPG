@@ -6,195 +6,180 @@ using System.Net;
 using System.Net.Sockets;
 using System.Timers;
 using FeMMORPG.Common;
-using FeMMORPG.Synchronization;
+using FeMMORPG.Data;
 
 namespace FeMMORPG.Server
 {
     public class GameClient : IDisposable
     {
-        public TcpClient Client { get; set; }
-        public DateTime ConnectTime { get; set; }
-        public User User { get; set; }
-        private bool connected;
-        private Persistence persistence;
-        private bool respondedToPing;
+        public Server Server;
+        public TcpClient Client;
+        public DateTime ConnectTime;
+        public DateTime LastActivity;
+        public User User;
+
+        private Persistence persistence = new Persistence();
+        private bool lastPingReturned;
+        private readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
+        private readonly TimeSpan PingTimeout = TimeSpan.FromSeconds(120);
+        private readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(30);
+
+        public GameClient(TcpClient client)
+        {
+            Client = client;
+        }
 
         public void Listen()
         {
+            var connectTimer = new Timer(ConnectTimeout.TotalMilliseconds);
+            connectTimer.Elapsed += ConnectTimer_Elapsed;
+            connectTimer.Enabled = true;
 
-            persistence = new Persistence();
-            connected = true;
-            respondedToPing = true;
-            var idleTimer = new Timer(2 * 60 * 1000);
-            idleTimer.AutoReset = true;
-            idleTimer.Elapsed += OnIdleTimer;
-            idleTimer.Enabled = true;
-
-            while (connected)
+            while (Client.Connected)
             {
-                var packet = new Packet();
                 try
                 {
-                    packet = Network.Receive(Client);
+                    var packet = Network.Receive(Client);
+
+                    switch (packet.Command)
+                    {
+                        case Commands.Login: OnLogin(packet.Parameters); break;
+                        case Commands.Logout: OnLogout(); break;
+                        case Commands.PingAck: OnPingAck(); break;
+                        default:
+                            Console.WriteLine($"Unexpected command byte: {(int)packet.Command}");
+                            Network.Disconnect(Client);
+                            break;
+                    }
                 }
                 catch (IOException e)
                 {
                     Console.WriteLine("Socket error: " + e.Message);
-                    if (!Client.Connected)
-                        break;
-                }
-
-                Console.WriteLine($"Received {packet.Command.ToString()} packet with {packet.Parameters.Count} params");
-                Console.WriteLine(packet.Parameters.DefaultIfEmpty(string.Empty).Aggregate((i, j) => i.ToString() + ", " + j.ToString()));
-
-                try
-                {
-                    switch (packet.Command)
-                    {
-                        case Commands.Connect:
-                            OnConnect(packet.Parameters);
-                            break;
-
-                        case Commands.Login:
-                            OnLogin(packet.Parameters);
-                            break;
-
-                        case Commands.Logout:
-                            OnLogout();
-                            break;
-
-                        case Commands.PingAck:
-                            OnPingAck();
-                            break;
-
-                        default:
-                            Console.WriteLine($"Unexpected command byte: {(int)packet.Command}");
-                            connected = false;
-                            break;
-                    }
                 }
                 catch (Exception e)
                 {
                     Console.WriteLine("Error in client loop: " + e);
+                    Network.Disconnect(Client);
                 }
             }
 
-            this.Dispose();
+            connectTimer.Dispose();
         }
 
-        private void OnConnect(List<object> parameters)
+        private void ConnectTimer_Elapsed(object sender, ElapsedEventArgs e)
         {
-            var canConnect = true;
-            var connectError = ErrorCodes.None;
-            if (Server.GetInstance().MinimumVersion.CompareTo(parameters[0]) > 0)
-            {
-                canConnect = false;
-                connectError = ErrorCodes.GameVersionTooLow;
-            }
-            else if (Server.GetInstance().Clients.Count(c => c.IPAddress == this.IPAddress) > Server.MaxConnectionsPerIP)
-            {
-                canConnect = false;
-                connectError = ErrorCodes.MaxConnectionsExceeded;
-            }
+            if (User == null)
+                Network.Disconnect(Client);
+        }
 
-            Network.Send(Client, new Packet
+        private void initPingTimer()
+        {
+            var pingTimer = new System.Timers.Timer(PingTimeout.TotalMilliseconds);
+            pingTimer.AutoReset = true;
+            pingTimer.Elapsed += PingTimer_Elapsed;
+            pingTimer.Enabled = true;
+        }
+
+        private void PingTimer_Elapsed(object source, ElapsedEventArgs e)
+        {
+            if (!lastPingReturned)
             {
-                Command = Commands.ConnectAck,
-                Parameters = { canConnect, connectError }
-            });
+                Network.Disconnect(Client);
+            }
+            else if (Client.Connected)
+            {
+                lastPingReturned = false;
+                Network.Send(Client, Commands.Ping);
+            }
+            else
+            {
+                ((System.Timers.Timer)source).Dispose();
+            }
         }
 
         private void OnLogin(List<object> parameters)
         {
+            if (parameters.Count < 3)
+                Network.Disconnect(Client);
+
             var username = (string)parameters[0];
-            var password = (string)parameters[1];
-
+            var tokenId = (Guid)parameters[1];
+            var clientVersion = (Version)parameters[2];
+            var ip = Server.ServerAddress.ToString();
             var success = true;
-            var loginError = ErrorCodes.None;
-            var user = persistence.GetUser(username);
-            if (user == null || user.Password != password)
+            var error = ErrorCodes.None;
+
+            // validate login token
+            var token = Server.UnitOfWork.LoginTokens.Query(new[] { "user" })
+                .Where(t => t.Id == tokenId)
+                .Where(t => t.User.Username == username)
+                .Where(t => t.ServerIP == ip)
+                .FirstOrDefault();
+            if (token == null || DateTime.UtcNow - token.LoginTime > TimeSpan.FromSeconds(10))
+                Network.Disconnect(Client);
+
+            if (Server.MinimumClientVersion > clientVersion)
             {
                 success = false;
-                loginError = ErrorCodes.InvalidLogin;
-
+                error = ErrorCodes.GameVersionTooLow;
             }
-            else if (Server.GetInstance().Clients.Any(c => c.User != null && c.User.Id == username))
+            else if (Server.MaxConnectionsPerIP > 0 &&
+                Server.Clients.Count(c => c.IPAddress == this.IPAddress) > Server.MaxConnectionsPerIP)
             {
                 success = false;
-                loginError = ErrorCodes.UserAlreadyLoggedIn;
+                error = ErrorCodes.MaxConnectionsExceeded;
+            }
+            else if (Server.MaxConnectionsPerAccount > 0 &&
+                Server.Clients.Count(c => c.User != null && c.User.Username == username) > Server.MaxConnectionsPerAccount)
+            {
+                success = false;
+                error = ErrorCodes.MaxConnectionsExceeded;
             }
 
-            Network.Send(Client, new Packet
-            {
-                Command = Commands.LoginAck,
-                Parameters = { success, loginError }
-            });
+            Network.Send(Client, Commands.LoginAck, new List<object> { success, error });
 
-            if (success)
-            {
-                this.User = user;
-                this.User.LastLogin = DateTime.UtcNow;
-                persistence.SaveUser(this.User);
-            }
-            else
-                connected = false;
+            if (!success)
+                Network.Disconnect(Client);
+
+            Console.WriteLine("User " + User.Username + " has logged in");
+            lastPingReturned = true;
+            User = token.User;
+            User.LastLogin = DateTime.UtcNow;
+            Server.UnitOfWork.LoginTokens.Remove(token);
+            initPingTimer();
         }
 
         private void OnLogout()
         {
-            Dispose();
-        }
-
-        private void OnIdleTimer(object source, ElapsedEventArgs e)
-        {
-            if (respondedToPing == false)
-            {
-                Logout(ErrorCodes.UserIdleTimeout);
-            }
-
-            if (connected)
-            {
-                respondedToPing = false;
-                Network.Send(Client, new Packet
-                {
-                    Command = Commands.Ping,
-                });
-            }
-            else
-            {
-                ((Timer)source).Dispose();
-            }
+            Network.Disconnect(Client);
         }
 
         private void OnPingAck()
         {
-            respondedToPing = true;
+            lastPingReturned = true;
         }
 
         private void Logout(ErrorCodes reason)
         {
             if (Client.Connected)
             {
-                Network.Send(Client, new Packet
-                {
-                    Command = Commands.Logout,
-                    Parameters = { reason }
-                });
+                Network.Send(Client, Commands.Logout, new List<object> { reason });
             }
-            Dispose();
+            Network.Disconnect(Client);
         }
 
-        public IPAddress IPAddress
+        public string IPAddress
         {
             get
             {
-                return ((IPEndPoint)Client.Client.RemoteEndPoint).Address;
+                if (Client.Connected)
+                    return ((IPEndPoint)Client.Client.RemoteEndPoint).Address.ToString();
+                return "";
             }
         }
 
         public void Dispose()
         {
-            connected = false;
             Network.Disconnect(Client);
         }
     }

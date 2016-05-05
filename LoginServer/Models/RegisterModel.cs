@@ -8,7 +8,7 @@
         /// <summary>
         /// Username
         /// </summary>
-        public string Id { get; set; }
+        public string Username { get; set; }
 
         /// <summary>
         /// Password

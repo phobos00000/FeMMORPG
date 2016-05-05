@@ -1,4 +1,5 @@
-﻿using FeMMORPG.Common;
+﻿using System;
+using FeMMORPG.Common;
 
 namespace FeMMORPG.LoginServer.Models
 {
@@ -18,8 +19,18 @@ namespace FeMMORPG.LoginServer.Models
         public ErrorCodes ErrorType { get; set; }
 
         /// <summary>
+        /// Login token for game server
+        /// </summary>
+        public Guid Token { get; set; }
+
+        /// <summary>
         /// Connection info for the game server
         /// </summary>
-        public string ServerUrl { get; set; }
+        public string ServerIP { get; set; }
+
+        /// <summary>
+        /// Time login was completed
+        /// </summary>
+        public DateTime LoginTime { get; set; }
     }
 }

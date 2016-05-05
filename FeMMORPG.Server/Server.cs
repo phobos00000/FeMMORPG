@@ -1,73 +1,95 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Configuration;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Threading.Tasks;
+using FeMMORPG.Common;
+using FeMMORPG.Data;
 
 namespace FeMMORPG.Server
 {
     public class Server
     {
-        private static Server instance;
-        public const int MaxConnectionsPerIP = 1;
-        private bool listening = false;
         private TcpListener socket;
-        public IPAddress ServerAddress { get; set; }
-        public int ServerPort { get; set; }
-        public List<GameClient> Clients { get; } = new List<GameClient>();
-        public Version MinimumVersion { get; set; } = new Version("0.1.0");
+        private CancellationTokenSource cancelTokenSource;
 
-        public Server()
-        {
-            Console.CancelKeyPress += delegate
-            {
-                this.Stop();
-            };
-        }
+        public IUserUnitOfWork UnitOfWork;
+        public IPAddress ServerAddress;
+        public int ServerPort;
+        public List<GameClient> Clients = new List<GameClient>();
+        public Version MinimumClientVersion;
+        public int MaxConnections;
+        public int MaxConnectionsPerIP;
+        public int MaxConnectionsPerAccount;
 
-        public static Server GetInstance()
+        public Server(IPAddress address, int port, CancellationTokenSource cts)
         {
-            if (Server.instance == null)
-                Server.instance = new Server();
-            return Server.instance;
+            ServerAddress = address;
+            ServerPort = port;
+            cancelTokenSource = cts;
+            UnitOfWork = new UserUnitOfWork(new UserDbContext());
+            MinimumClientVersion = new Version(ConfigurationManager.AppSettings["minClientVersion"]);
+            if (!int.TryParse(ConfigurationManager.AppSettings["maxConnections"], out MaxConnections))
+                MaxConnections = 100;
+            if (!int.TryParse(ConfigurationManager.AppSettings["maxConnectionsPerIp"], out MaxConnectionsPerIP))
+                MaxConnectionsPerIP = 0;
+            if (!int.TryParse(ConfigurationManager.AppSettings["maxConnectionsPerAccount"], out MaxConnectionsPerAccount))
+                MaxConnectionsPerAccount = 1;
         }
 
         public void Listen()
         {
+            Console.WriteLine("Starting...");
             socket = new TcpListener(ServerAddress, ServerPort);
             socket.Start();
-            listening = true;
-            Console.WriteLine("Server is listening for new connections");
-            while (listening)
+
+            var server = new Data.Server
             {
-                var tcpClient = socket.AcceptTcpClient();
-                tcpClient.ReceiveBufferSize = 256;
-                ThreadPool.QueueUserWorkItem(AcceptClient, tcpClient);
+                IP = ServerAddress.ToString(),
+                CurrentUsers = 0,
+                MaxUsers = MaxConnections,
+                Enabled = true,
+            };
+
+            UnitOfWork.Servers.Add(server);
+            UnitOfWork.SaveChanges();
+
+            Console.WriteLine("Server is listening for new connections");
+
+            while (!cancelTokenSource.IsCancellationRequested)
+            {
+                Thread.Sleep(200);
+                if (socket.Pending())
+                {
+                    var tcpClient = socket.AcceptTcpClient();
+                    Task.Factory.StartNew(AcceptClient, tcpClient, TaskCreationOptions.LongRunning);
+                }
             }
 
-            this.Stop();
-            Console.WriteLine("Server has stopped accepting new connections");
-        }
+            server = UnitOfWork.Servers.Find(ServerAddress.ToString());
+            UnitOfWork.Servers.Remove(server);
+            UnitOfWork.SaveChanges();
 
-        public void Stop()
-        {
             Console.WriteLine("Server has received a request to shut down");
-            listening = false;
             socket.Stop();
+            Clients.ForEach(c => Network.Disconnect(c.Client));
         }
 
         private void AcceptClient(object obj)
         {
             Console.WriteLine("A client connection has been established");
-            var client = new GameClient
-            {
-                Client = (TcpClient)obj,
-                ConnectTime = DateTime.UtcNow,
-            };
+
+            UnitOfWork.Servers.Find(ServerAddress.ToString());
+            var client = new GameClient((TcpClient)obj);
+            client.Server = this;
+            client.ConnectTime = DateTime.UtcNow;
             this.Clients.Add(client);
             client.Listen();
             this.Clients.Remove(client);
             client.Dispose();
+
             Console.WriteLine("A client connection has been terminated");
         }
     }

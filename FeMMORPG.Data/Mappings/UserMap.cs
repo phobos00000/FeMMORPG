@@ -26,9 +26,9 @@ namespace FeMMORPG.Data
             Property(t => t.Enabled)
                 .IsRequired();
 
-            HasMany(t => t.Characters)
+            HasOptional(t => t.LoginToken)
                 .WithRequired(t => t.User)
-                .HasForeignKey(t => t.UserId);
+                .Map(m => m.MapKey("UserId"));
         }
     }
 }

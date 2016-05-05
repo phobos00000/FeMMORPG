@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 
 namespace FeMMORPG.Data
 {
@@ -11,6 +10,6 @@ namespace FeMMORPG.Data
         public DateTime? LastLogin { get; set; }
         public bool Enabled { get; set; }
 
-        public virtual ICollection<Character> Characters { get; set; }
+        public virtual LoginToken LoginToken { get; set; }
     }
 }

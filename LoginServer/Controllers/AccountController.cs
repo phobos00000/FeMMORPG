@@ -1,10 +1,12 @@
 ﻿using System;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Web.Http;
 using System.Web.Http.Description;
+using AutoMapper;
 using FeMMORPG.Common;
-using FeMMORPG.Synchronization;
+using FeMMORPG.Data;
 using FeMMORPG.LoginServer.Models;
 
 namespace FeMMORPG.LoginServer.Controllers
@@ -15,26 +17,26 @@ namespace FeMMORPG.LoginServer.Controllers
     [RoutePrefix("")]
     public class AccountController : ApiController
     {
-        private IPersistenceService persistenceService;
-        private AutoMapper.MapperConfiguration mapConfig;
+        private IUserUnitOfWork unitOfWork;
+        private IMapper mapper;
 
         /// <summary>
         /// Controller
         /// </summary>
-        /// <param name="persistenceService"></param>
+        /// <param name="unitOfWork"></param>
+        /// <param name="mapper"></param>
         public AccountController(
-            IPersistenceService persistenceService
+            IUserUnitOfWork unitOfWork,
+            IMapper mapper
             )
         {
-            if (persistenceService == null)
-                throw new ArgumentNullException(nameof(persistenceService));
+            if (unitOfWork == null)
+                throw new ArgumentNullException(nameof(unitOfWork));
+            if (mapper == null)
+                throw new ArgumentNullException(nameof(mapper));
 
-            this.persistenceService = persistenceService;
-
-            mapConfig = new AutoMapper.MapperConfiguration(cfg =>
-            {
-                //cfg.CreateMap<User, UserModel>().ReverseMap();
-            });
+            this.unitOfWork = unitOfWork;
+            this.mapper = mapper;
         }
 
         /// <summary>
@@ -50,19 +52,59 @@ namespace FeMMORPG.LoginServer.Controllers
             if (model.Username == null || model.Password == null)
                 return BadRequest(ErrorCodes.InvalidLogin.ToString());
 
+            // Authenticate user
             byte[] passwordBytes = Encoding.UTF8.GetBytes(model.Password);
-            var bytes = new SHA256Managed().ComputeHash(passwordBytes);
+            var password = Convert.ToBase64String(new SHA256Managed().ComputeHash(passwordBytes));
 
-            var user = persistenceService.GetUser(model.Username);
-            if (user == null || user.Password != Convert.ToBase64String(bytes))
+            var user = unitOfWork.Users.Query()
+                .Where(u => u.Username == model.Username)
+                .Where(u => u.Password == password)
+                .SingleOrDefault();
+            if (user == null)
                 return BadRequest(ErrorCodes.InvalidLogin.ToString());
 
-            // TODO: get validated login to game server... somehow
+            if (user.LoginToken != null)
+            {
+                user.LoginToken.Server.CurrentUsers -= 1;
+                unitOfWork.Servers.Update(user.LoginToken.Server);
 
+                unitOfWork.LoginTokens.Remove(user.LoginToken);
+            }
+
+            // Determine optimal world server
+            var server = unitOfWork.Servers.Query()
+                .Where(s => s.Enabled)
+                .Where(s => s.CurrentUsers < s.MaxUsers)
+                .OrderBy(s => s.CurrentUsers)
+                .FirstOrDefault();
+
+            if (server == null)
+                return Content(System.Net.HttpStatusCode.ServiceUnavailable, ErrorCodes.NoGameServersAvailable.ToString());
+
+            // Generate login token
+            var token = new LoginToken
+            {
+                Id = Guid.NewGuid(),
+                User = user,
+                LoginTime = DateTime.UtcNow,
+                Server = server,
+            };
+            unitOfWork.LoginTokens.Add(token);
+
+            server.CurrentUsers += 1;
+            unitOfWork.Servers.Update(server);
+
+            user.LastLogin = DateTime.UtcNow;
+            unitOfWork.Users.Update(user);
+
+            unitOfWork.SaveChanges();
+
+            // Send success message with token info to user
             return Ok(new LoginResultModel
             {
                 Success = true,
-                ServerUrl = "blah",
+                Token = token.Id,
+                ServerIP = server.IP,
             });
         }
 
@@ -77,22 +119,26 @@ namespace FeMMORPG.LoginServer.Controllers
         public IHttpActionResult Register(RegisterModel model)
         {
             model = model ?? new RegisterModel();
-            if (model.Id == null || model.Password == null)
+            if (model.Username == null || model.Password == null)
                 return BadRequest(ErrorCodes.InvalidRegistration.ToString());
 
             // TODO: validation
 
-            if (persistenceService.GetUser(model.Id) != null)
+            var user = this.unitOfWork.Users.Query()
+                .SingleOrDefault(u => u.Username == model.Username);
+            if (user != null)
                 return BadRequest(ErrorCodes.UserAlreadyExists.ToString());
 
             byte[] passwordBytes = Encoding.UTF8.GetBytes(model.Password);
-            var bytes = new SHA256Managed().ComputeHash(passwordBytes);
+            var password = Convert.ToBase64String(new SHA256Managed().ComputeHash(passwordBytes));
 
-            persistenceService.AddUser(new User
+            this.unitOfWork.Users.Add(new User
             {
-                Id = model.Id,
-                Password = Convert.ToBase64String(bytes),
+                Username = model.Username,
+                Password = password,
+                Enabled = true,
             });
+            this.unitOfWork.SaveChanges();
 
             return Ok(new RegisterResultModel
             {

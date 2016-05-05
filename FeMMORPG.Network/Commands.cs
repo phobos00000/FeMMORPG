@@ -2,8 +2,6 @@
 {
     public enum Commands
     {
-        Connect,
-        ConnectAck,
         Login,
         LoginAck,
         Logout,

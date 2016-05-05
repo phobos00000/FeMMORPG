@@ -13,7 +13,7 @@ namespace FeMMORPG.Data.Migrations
         
         string IMigrationMetadata.Id
         {
-            get { return "201604280545182_Initial"; }
+            get { return "201605030500456_Initial"; }
         }
         
         string IMigrationMetadata.Source

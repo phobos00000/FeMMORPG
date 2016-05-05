@@ -1,6 +1,7 @@
-using System.Configuration;
+using System.Data.Entity;
 using System.Web.Http;
-using FeMMORPG.Synchronization;
+using FeMMORPG.Data;
+using FeMMORPG.LoginServer.App_Start;
 using Microsoft.Practices.Unity;
 using Unity.WebApi;
 
@@ -12,12 +13,9 @@ namespace FeMMORPG.LoginServer
         {
             var container = new UnityContainer();
 
-            // register all your components with the container here
-            // it is NOT necessary to register your controllers
-            container.RegisterType<IPersistenceService, PersistenceService>(new HierarchicalLifetimeManager());
-
-            string connectionString = ConfigurationManager.ConnectionStrings["MongoDb"].ConnectionString;
-            container.RegisterInstance<IRepository<User>>(new MongoRepository<User>(connectionString));
+            container.RegisterType<IUserUnitOfWork, UserUnitOfWork>(new HierarchicalLifetimeManager());
+            container.RegisterType<DbContext, UserDbContext>(new HierarchicalLifetimeManager());
+            container.RegisterInstance(AutoMapperConfig.GetMapperConfiguration().CreateMapper());
 
             GlobalConfiguration.Configuration.DependencyResolver = new UnityDependencyResolver(container);
         }

@@ -2,19 +2,19 @@
 
 namespace FeMMORPG.Data
 {
-    public class UserContext : DbContext
+    public class UserDbContext : DbContext
     {
-        public UserContext() : base(nameof(UserContext))
+        public UserDbContext() : base(nameof(UserDbContext))
         {
         }
 
         public DbSet<User> Users { get; set; }
-        public DbSet<Character> Characters { get; set; }
+        public DbSet<Server> Servers { get; set; }
 
         protected override void OnModelCreating(DbModelBuilder modelBuilder)
         {
             modelBuilder.Configurations.Add(new UserMap());
-            modelBuilder.Configurations.Add(new CharacterMap());
+            modelBuilder.Configurations.Add(new ServerMap());
         }
     }
 }

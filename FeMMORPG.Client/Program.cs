@@ -22,9 +22,7 @@ namespace FeMMORPG.Client
             var password = Console.ReadLine();
 
             var client = new Client();
-            if (!client.Connect(serverAddress, port))
-                return;
-            if (!client.Login(username, password))
+            if (!client.Connect(serverAddress, port, username, password))
                 return;
             client.WaitForEvents();
         }

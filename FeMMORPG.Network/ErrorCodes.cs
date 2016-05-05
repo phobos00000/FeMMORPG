@@ -10,5 +10,6 @@
         UserAlreadyExists,
         UserAlreadyLoggedIn,
         UserIdleTimeout,
+        NoGameServersAvailable,
     }
 }
