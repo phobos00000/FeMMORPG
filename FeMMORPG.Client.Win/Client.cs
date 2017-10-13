@@ -8,13 +8,13 @@ using FeMMORPG.Common;
 using FeMMORPG.Common.Models;
 using Newtonsoft.Json;
 
-namespace FeMMORPG.Client
+namespace FeMMORPG.Client.Win
 {
     public class Client
     {
         public const string Version = "0.1.0";
         public TcpClient Server = new TcpClient();
-        public event CharacterEventHandler CharactersReceived;
+        public event ConnectEventHandler Connected;
 
         public Client()
         {
@@ -56,16 +56,14 @@ namespace FeMMORPG.Client
                     var packet = Network.Receive(Server);
                     if (packet.Command == Commands.Login && (bool)packet.Parameters[0] == true)
                     {
-                        this.CharactersReceived(this, new CharacterEventArgs((List<Character>)packet.Parameters[1]));
-                        Console.WriteLine("Server handshake successful!");
+                        this.Connected(this, new ConnectEventArgs((bool)packet.Parameters[0], ErrorCodes.None, (List<Character>)packet.Parameters[1]));
                         return true;
                     }
 
-                    Console.WriteLine("Server handshake failed: " + ((ErrorCodes)packet.Parameters[1]).ToString());
+                    this.Connected(this, new ConnectEventArgs((bool)packet.Parameters[0], ((ErrorCodes)packet.Parameters[1])));
                     return false;
                 }
 
-                Console.WriteLine("Could not connect to server!");
                 return false;
             }
             catch (Exception e)

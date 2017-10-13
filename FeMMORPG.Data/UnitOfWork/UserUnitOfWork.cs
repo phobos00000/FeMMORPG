@@ -7,6 +7,7 @@ namespace FeMMORPG.Data
         private IRepository<User> users;
         private IRepository<LoginToken> loginTokens;
         private IRepository<Server> servers;
+        private IRepository<Character> characters;
 
         public UserUnitOfWork(DbContext context) : base(context)
         {
@@ -20,5 +21,8 @@ namespace FeMMORPG.Data
 
         public IRepository<Server> Servers
             => servers ?? (servers = new Repository<Server>(Context));
+
+        public IRepository<Character> Characters
+            => characters ?? (characters = new Repository<Character>(Context));
     }
 }

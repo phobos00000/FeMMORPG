@@ -3,9 +3,9 @@
     public enum Commands
     {
         Login,
-        LoginAck,
         Logout,
         Ping,
-        PingAck,
+        Played,
+        Characters,
     }
 }

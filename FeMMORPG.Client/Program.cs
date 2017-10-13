@@ -22,9 +22,17 @@ namespace FeMMORPG.Client
             var password = Console.ReadLine();
 
             var client = new Client();
+            client.CharactersReceived += OnCharactersReceived;
             if (!client.Connect(serverAddress, port, username, password))
                 return;
             client.WaitForEvents();
+        }
+
+        static void OnCharactersReceived(object sender, CharacterEventArgs e)
+        {
+            Console.WriteLine("Received character list:");
+            Console.WriteLine("------------------------");
+            e.Characters.ForEach(c => Console.WriteLine($"[{c.Id}] {c.Name}"));
         }
     }
 }

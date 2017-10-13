@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using FeMMORPG.Common;
 
 namespace FeMMORPG.Server
 {
@@ -55,6 +56,16 @@ namespace FeMMORPG.Server
 
             switch (parts[0])
             {
+                case "command":
+                    var user = parts[1];
+                    var com = parts[2];
+
+                    if (com == "played")
+                    {
+                        var client = server.Clients.SingleOrDefault(c => c.User.Username == user);
+                        client.FakePacket(new Packet { Command = Commands.Played });
+                    }
+                    break;
                 case "clients":
                 case "list":
                     ShowClients();

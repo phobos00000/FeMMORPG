@@ -5,5 +5,6 @@
         IRepository<User> Users { get; }
         IRepository<LoginToken> LoginTokens { get; }
         IRepository<Server> Servers { get; }
+        IRepository<Character> Characters { get; }
     }
 }

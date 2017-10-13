@@ -3,4 +3,5 @@
 - caching persistence layer (redis?)
 - chat service
 - server GUI
+- client GUI
 - resources (maps)

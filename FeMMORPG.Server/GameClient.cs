@@ -5,6 +5,8 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Timers;
+using AutoMapper;
+using AutoMapper.QueryableExtensions;
 using FeMMORPG.Common;
 using FeMMORPG.Data;
 
@@ -17,9 +19,15 @@ namespace FeMMORPG.Server
         public DateTime ConnectTime;
         public DateTime LastActivity;
         public User User;
+        public event PacketEventHandler PacketReceived;
+        public event LoginEventHandler LoggedIn;
+        public event LogoutEventHandler LoggedOut;
 
         private Persistence persistence = new Persistence();
         private bool lastPingReturned;
+        private MapperConfiguration mapConfig;
+        private Timer connectTimer;
+        private Timer pingTimer;
         private readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
         private readonly TimeSpan PingTimeout = TimeSpan.FromSeconds(120);
         private readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(30);
@@ -27,12 +35,22 @@ namespace FeMMORPG.Server
         public GameClient(TcpClient client)
         {
             Client = client;
+            mapConfig = MapConfig.Config();
+
+            PacketReceived += ProcessPacket;
+            LoggedIn += OnLogin;
+            LoggedOut += OnLogout;
+
+            connectTimer = new Timer(ConnectTimeout.TotalMilliseconds);
+            connectTimer.Elapsed += OnConnectTimer;
+
+            pingTimer = new Timer(PingTimeout.TotalMilliseconds);
+            pingTimer.AutoReset = true;
+            pingTimer.Elapsed += OnPingTimer;
         }
 
         public void Listen()
         {
-            var connectTimer = new Timer(ConnectTimeout.TotalMilliseconds);
-            connectTimer.Elapsed += ConnectTimer_Elapsed;
             connectTimer.Enabled = true;
 
             while (Client.Connected)
@@ -40,17 +58,7 @@ namespace FeMMORPG.Server
                 try
                 {
                     var packet = Network.Receive(Client);
-
-                    switch (packet.Command)
-                    {
-                        case Commands.Login: OnLogin(packet.Parameters); break;
-                        case Commands.Logout: OnLogout(); break;
-                        case Commands.PingAck: OnPingAck(); break;
-                        default:
-                            Console.WriteLine($"Unexpected command byte: {(int)packet.Command}");
-                            Network.Disconnect(Client);
-                            break;
-                    }
+                    OnPacketReceived(new PacketEventArgs(packet.Command, packet.Parameters));
                 }
                 catch (IOException e)
                 {
@@ -63,24 +71,76 @@ namespace FeMMORPG.Server
                 }
             }
 
+            OnLoggedOut(new LogoutEventArgs(User, DateTime.UtcNow));
+        }
+
+        internal void FakePacket(Packet packet)
+        {
+            OnPacketReceived(new PacketEventArgs(packet.Command, packet.Parameters));
+        }
+
+        private void ProcessPacket(object sender, PacketEventArgs e)
+        {
+            // If user is not logged in, sending anything other than login command
+            // will terminate the connection.
+            if (((GameClient)sender).User == null && e.Command != Commands.Login)
+            {
+                Network.Disconnect(Client);
+                return;
+            }
+
+            switch (e.Command)
+            {
+                case Commands.Login: HandleLogin(e.Parameters); break;
+                case Commands.Logout: HandleLogout(); break;
+                case Commands.Ping: HandlePing(); break;
+                case Commands.Played: HandlePlayed(); break;
+                default:
+                    Console.WriteLine($"Unexpected command byte: {(int)e.Command}");
+                    Network.Disconnect(Client);
+                    break;
+            }
+        }
+
+        private void OnLogin(object sender, LoginEventArgs e)
+        {
+            Console.WriteLine($"User {e.User.Username} logged in");
+
+            User = e.User;
+
+            // Save login date
+            User.LastLogin = e.LoginTime;
+            Server.UnitOfWork.Users.Update(User);
+            Server.UnitOfWork.SaveChanges();
+
+            // Turn on heartbeat
+            lastPingReturned = true;
+            pingTimer.Enabled = true;
+        }
+
+        private void OnLogout(object sender, LogoutEventArgs e)
+        {
+            var connectTime = e.LogoutTime - User.LastLogin.Value;
+            Console.WriteLine($"User {e.User.Username} logged out, connect time: {connectTime.ToString(@"hh\:mm\:ss")}");
+
+            // Save logout date and total time played this session
+            e.User.LastLogout = e.LogoutTime;
+            e.User.SecondsPlayed += (int)connectTime.TotalSeconds;
+            Server.UnitOfWork.Users.Update(e.User);
+            Server.UnitOfWork.SaveChanges();
+
+            // Dispose timers only relevant when connected
+            pingTimer.Dispose();
             connectTimer.Dispose();
         }
 
-        private void ConnectTimer_Elapsed(object sender, ElapsedEventArgs e)
+        private void OnConnectTimer(object sender, ElapsedEventArgs e)
         {
             if (User == null)
                 Network.Disconnect(Client);
         }
 
-        private void initPingTimer()
-        {
-            var pingTimer = new System.Timers.Timer(PingTimeout.TotalMilliseconds);
-            pingTimer.AutoReset = true;
-            pingTimer.Elapsed += PingTimer_Elapsed;
-            pingTimer.Enabled = true;
-        }
-
-        private void PingTimer_Elapsed(object source, ElapsedEventArgs e)
+        private void OnPingTimer(object sender, ElapsedEventArgs e)
         {
             if (!lastPingReturned)
             {
@@ -93,11 +153,11 @@ namespace FeMMORPG.Server
             }
             else
             {
-                ((System.Timers.Timer)source).Dispose();
+                ((Timer)sender).Enabled = false;
             }
         }
 
-        private void OnLogin(List<object> parameters)
+        private void HandleLogin(List<object> parameters)
         {
             if (parameters.Count < 3)
                 Network.Disconnect(Client);
@@ -110,11 +170,12 @@ namespace FeMMORPG.Server
             var error = ErrorCodes.None;
 
             // validate login token
-            var token = Server.UnitOfWork.LoginTokens.Query(new[] { "user" })
+            var token = Server.UnitOfWork.LoginTokens.Query(new[] { "user", "user.characters" })
                 .Where(t => t.Id == tokenId)
                 .Where(t => t.User.Username == username)
                 .Where(t => t.ServerIP == ip)
                 .FirstOrDefault();
+
             if (token == null || DateTime.UtcNow - token.LoginTime > TimeSpan.FromSeconds(10))
                 Network.Disconnect(Client);
 
@@ -130,33 +191,42 @@ namespace FeMMORPG.Server
                 error = ErrorCodes.MaxConnectionsExceeded;
             }
             else if (Server.MaxConnectionsPerAccount > 0 &&
-                Server.Clients.Count(c => c.User != null && c.User.Username == username) > Server.MaxConnectionsPerAccount)
+                Server.Clients.Count(c => c.User != null && c.User.Username == username) + 1 > Server.MaxConnectionsPerAccount)
             {
                 success = false;
                 error = ErrorCodes.MaxConnectionsExceeded;
             }
 
-            Network.Send(Client, Commands.LoginAck, new List<object> { success, error });
-
-            if (!success)
+            if (success)
+            {
+                var characters = token.User.Characters.AsQueryable().ProjectTo<Common.Models.Character>(mapConfig).ToList();
+                Network.Send(Client, Commands.Login, new List<object> { true, characters });
+                OnLoggedIn(new LoginEventArgs(token.User, DateTime.UtcNow));
+            }
+            else
+            {
+                Network.Send(Client, Commands.Login, new List<object> { false, error });
                 Network.Disconnect(Client);
+            }
 
-            Console.WriteLine("User " + User.Username + " has logged in");
-            lastPingReturned = true;
-            User = token.User;
-            User.LastLogin = DateTime.UtcNow;
             Server.UnitOfWork.LoginTokens.Remove(token);
-            initPingTimer();
+            Server.UnitOfWork.SaveChanges();
         }
 
-        private void OnLogout()
+        private void HandleLogout()
         {
             Network.Disconnect(Client);
         }
 
-        private void OnPingAck()
+        private void HandlePing()
         {
             lastPingReturned = true;
+        }
+
+        private void HandlePlayed()
+        {
+            var played = User.SecondsPlayed + (int)((DateTime.UtcNow - User.LastLogin.Value).TotalSeconds);
+            Network.Send(Client, Commands.Played, new List<object> { played });
         }
 
         private void Logout(ErrorCodes reason)
@@ -176,6 +246,24 @@ namespace FeMMORPG.Server
                     return ((IPEndPoint)Client.Client.RemoteEndPoint).Address.ToString();
                 return "";
             }
+        }
+
+        protected virtual void OnPacketReceived(PacketEventArgs e)
+        {
+            if (PacketReceived != null)
+                PacketReceived(this, e);
+        }
+
+        protected virtual void OnLoggedIn(LoginEventArgs e)
+        {
+            if (LoggedIn != null)
+                LoggedIn(this, e);
+        }
+
+        protected virtual void OnLoggedOut(LogoutEventArgs e)
+        {
+            if (LoggedOut != null)
+                LoggedOut(this, e);
         }
 
         public void Dispose()

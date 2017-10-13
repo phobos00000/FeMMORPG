@@ -23,12 +23,21 @@ namespace FeMMORPG.Data
             Property(t => t.LastLogin)
                 .HasColumnType("datetime2");
 
+            Property(t => t.LastLogout)
+                .HasColumnType("datetime2");
+
+            Property(t => t.SecondsPlayed);
+
             Property(t => t.Enabled)
                 .IsRequired();
 
             HasOptional(t => t.LoginToken)
                 .WithRequired(t => t.User)
                 .Map(m => m.MapKey("UserId"));
+
+            HasMany(t => t.Characters)
+                .WithRequired(t => t.User)
+                .HasForeignKey(t => t.UserId);
         }
     }
 }
